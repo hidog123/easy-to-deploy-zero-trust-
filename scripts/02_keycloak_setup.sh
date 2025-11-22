@@ -1,33 +1,111 @@
 #!/bin/bash
 
-echo "🔐 Setting up Keycloak IAM..."
+echo "🔐 Deploying Keycloak IAM..."
 
-# Generate Keycloak configuration
-source ./config/keycloak.env
+source ../config/keycloak.env
 
-# Start Keycloak container
-docker run -d \
-  --name keycloak \
-  -e KEYCLOAK_ADMIN=$KEYCLOAK_ADMIN \
-  -e KEYCLOAK_ADMIN_PASSWORD=$KEYCLOAK_ADMIN_PASSWORD \
-  -p 8080:8080 \
-  quay.io/keycloak/keycloak:latest start-dev
+# Create Keycloak docker-compose
+cat > docker-compose-keycloak.yml << EOF
+version: '3.8'
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: keycloak
+    environment:
+      KEYCLOAK_ADMIN: $KEYCLOAK_ADMIN
+      KEYCLOAK_ADMIN_PASSWORD: $KEYCLOAK_ADMIN_PASSWORD
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: $KEYCLOAK_DB_PASSWORD
+    command: start-dev
+    ports:
+      - "8080:8080"
+    networks:
+      - zt-network
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:15
+    container_name: postgres-keycloak
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: $KEYCLOAK_DB_PASSWORD
+    networks:
+      - zt-network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+
+networks:
+  zt-network:
+    external: true
+EOF
+
+# Start Keycloak
+docker-compose -f docker-compose-keycloak.yml up -d
 
 # Wait for Keycloak to be ready
-until curl -f -s http://localhost:8080/auth/realms/master > /dev/null; do
-    sleep 5
+echo "⏳ Waiting for Keycloak to start..."
+until curl -s -f http://localhost:8080 > /dev/null; do
+    sleep 10
 done
 
-# Configure Keycloak realm, clients, users
-# ... Keycloak configuration commands ...
+# Configure Keycloak realm and client
+echo "⚙️ Configuring Keycloak realm and clients..."
 
-# Extract outputs for other services
-KEYCLOAK_URL="http://localhost:8080"
-CLIENT_SECRET=$(keycloak_script_to_get_client_secret)
+# Get admin token
+ADMIN_TOKEN=$(curl -s -X POST \
+  http://localhost:8080/realms/master/protocol/openid-connect/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=$KEYCLOAK_ADMIN&password=$KEYCLOAK_ADMIN_PASSWORD&grant_type=password&client_id=admin-cli" | jq -r '.access_token')
 
-# Write outputs for other scripts
-echo "KEYCLOAK_URL=$KEYCLOAK_URL" > ../outputs/keycloak_outputs.txt
-echo "CLIENT_SECRET=$CLIENT_SECRET" >> ../outputs/keycloak_outputs.txt
-echo "REALM=zero-trust" >> ../outputs/keycloak_outputs.txt
+# Create Zero Trust realm
+curl -s -X POST \
+  http://localhost:8080/admin/realms \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "realm": "zero-trust",
+    "enabled": true,
+    "displayName": "Zero Trust Realm"
+  }'
 
-echo "✅ Keycloak setup complete"
+# Create OPA client
+curl -s -X POST \
+  http://localhost:8080/admin/realms/zero-trust/clients \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "clientId": "opa-client",
+    "enabled": true,
+    "publicClient": false,
+    "secret": "opa-secret-key",
+    "protocol": "openid-connect"
+  }'
+
+# Create Traefik client
+curl -s -X POST \
+  http://localhost:8080/admin/realms/zero-trust/clients \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "clientId": "traefik-client",
+    "enabled": true,
+    "publicClient": false,
+    "secret": "traefik-secret-key",
+    "protocol": "openid-connect"
+  }'
+
+# Write outputs
+echo "KEYCLOAK_URL=http://localhost:8080" > ../outputs/keycloak_outputs.txt
+echo "KEYCLOAK_REALM=zero-trust" >> ../outputs/keycloak_outputs.txt
+echo "OPA_CLIENT_SECRET=opa-secret-key" >> ../outputs/keycloak_outputs.txt
+echo "TRAEFIK_CLIENT_SECRET=traefik-secret-key" >> ../outputs/keycloak_outputs.txt
+echo "ADMIN_TOKEN=$ADMIN_TOKEN" >> ../outputs/keycloak_outputs.txt
+
+echo "✅ Keycloak deployment complete"

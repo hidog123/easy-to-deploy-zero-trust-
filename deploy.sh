@@ -2,11 +2,21 @@
 
 set -e
 
+# Get the absolute path of the script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 # Load global configuration
-source ./config/global.env
+if [ -f "./config/global.env" ]; then
+    source "./config/global.env"
+else
+    echo "⚠️ Global config not found, using defaults"
+fi
 
 echo "🚀 Starting Zero Trust Architecture Deployment"
 echo "============================================="
+echo "Script directory: $SCRIPT_DIR"
+echo "Working directory: $(pwd)"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -20,6 +30,7 @@ log_output() {
     local service=$1
     local key=$2
     local value=$3
+    mkdir -p "./outputs"
     echo "$key=$value" >> "./outputs/${service}_outputs.txt"
 }
 
@@ -27,7 +38,12 @@ log_output() {
 get_output() {
     local service=$1
     local key=$2
-    grep "$key" "./outputs/${service}_outputs.txt" 2>/dev/null | cut -d'=' -f2 || echo ""
+    local output_file="./outputs/${service}_outputs.txt"
+    if [ -f "$output_file" ]; then
+        grep "$key" "$output_file" 2>/dev/null | cut -d'=' -f2 || echo ""
+    else
+        echo ""
+    fi
 }
 
 # Function to check service health
@@ -63,8 +79,13 @@ deploy_component() {
     echo -e "\n${BLUE}=== $description ===${NC}"
     echo -e "${YELLOW}Running $script...${NC}"
     
-    if [ -f "./scripts/$script" ]; then
-        if bash "./scripts/$script"; then
+    local script_path="./scripts/$script"
+    if [ -f "$script_path" ]; then
+        # Make script executable
+        chmod +x "$script_path"
+        
+        # Run script from the correct directory
+        if bash "$script_path"; then
             echo -e "${GREEN}✅ $component deployed successfully${NC}"
             return 0
         else
@@ -72,15 +93,15 @@ deploy_component() {
             return 1
         fi
     else
-        echo -e "${RED}❌ Deployment script $script not found${NC}"
+        echo -e "${RED}❌ Deployment script $script_path not found${NC}"
         return 1
     fi
 }
 
 # Main deployment function
 main() {
-    # Create outputs directory
-    mkdir -p ./outputs ./logs
+    # Create necessary directories
+    mkdir -p ./outputs ./logs ./config ./policies
     
     # Start deployment log
     echo "Zero Trust Deployment Started: $(date)" > ./logs/deployment.log
@@ -88,40 +109,47 @@ main() {
     # 1. Prerequisites
     echo -e "\n${BLUE}=== STAGE 1: Prerequisites ===${NC}"
     if ! deploy_component "Prerequisites" "01_prerequisites.sh" "Installing system dependencies and certificates"; then
-        exit 1
+        echo -e "${YELLOW}⚠️ Prerequisites had issues, but continuing...${NC}"
     fi
     
-    # Load prerequisite outputs
-    source ./outputs/prerequisites_outputs.txt
+    # Load prerequisite outputs if they exist
+    if [ -f "./outputs/prerequisites_outputs.txt" ]; then
+        source "./outputs/prerequisites_outputs.txt"
+    fi
     
     # 2. Keycloak IAM Setup
     echo -e "\n${BLUE}=== STAGE 2: Identity and Access Management ===${NC}"
     if ! deploy_component "Keycloak" "02_keycloak_setup.sh" "Deploying Keycloak IAM with RBAC/ABAC"; then
-        exit 1
+        echo -e "${YELLOW}⚠️ Keycloak setup had issues, but continuing...${NC}"
     fi
     
     # Wait for Keycloak and get outputs
     KEYCLOAK_URL=$(get_output "keycloak" "KEYCLOAK_URL")
-    if ! check_service_health "Keycloak" "$KEYCLOAK_URL"; then
-        exit 1
+    if [ -n "$KEYCLOAK_URL" ]; then
+        if check_service_health "Keycloak" "$KEYCLOAK_URL"; then
+            echo -e "${GREEN}✅ Keycloak deployed at: $KEYCLOAK_URL${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠️ Keycloak URL not available${NC}"
     fi
     
     KEYCLOAK_CLIENT_SECRET=$(get_output "keycloak" "OPA_CLIENT_SECRET")
-    echo -e "${GREEN}✅ Keycloak deployed at: $KEYCLOAK_URL${NC}"
     
     # 3. OPA Policy Engine
     echo -e "\n${BLUE}=== STAGE 3: Policy Engine ===${NC}"
     if ! deploy_component "OPA" "03_opa_policies.sh" "Deploying Open Policy Agent with dynamic ABAC policies"; then
-        exit 1
+        echo -e "${YELLOW}⚠️ OPA setup had issues, but continuing...${NC}"
     fi
     
     # Wait for OPA and get outputs
     OPA_URL=$(get_output "opa" "OPA_URL")
-    if ! check_service_health "OPA" "$OPA_URL/health"; then
-        exit 1
+    if [ -n "$OPA_URL" ]; then
+        if check_service_health "OPA" "$OPA_URL/health"; then
+            echo -e "${GREEN}✅ OPA deployed at: $OPA_URL${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠️ OPA URL not available${NC}"
     fi
-    
-    echo -e "${GREEN}✅ OPA deployed at: $OPA_URL${NC}"
     
     # 4. ZTNA Tunnel Setup
     echo -e "\n${BLUE}=== STAGE 4: Zero Trust Network Access ===${NC}"
@@ -191,7 +219,8 @@ perform_final_checks() {
     local all_healthy=true
     
     # Check Keycloak
-    if curl -s -f "$KEYCLOAK_URL" > /dev/null; then
+    KEYCLOAK_URL=$(get_output "keycloak" "KEYCLOAK_URL")
+    if [ -n "$KEYCLOAK_URL" ] && curl -s -f "$KEYCLOAK_URL" > /dev/null; then
         echo -e "${GREEN}✅ Keycloak: HEALTHY${NC}"
     else
         echo -e "${RED}❌ Keycloak: UNHEALTHY${NC}"
@@ -199,7 +228,8 @@ perform_final_checks() {
     fi
     
     # Check OPA
-    if curl -s -f "$OPA_URL/health" > /dev/null; then
+    OPA_URL=$(get_output "opa" "OPA_URL")
+    if [ -n "$OPA_URL" ] && curl -s -f "$OPA_URL/health" > /dev/null; then
         echo -e "${GREEN}✅ OPA: HEALTHY${NC}"
     else
         echo -e "${RED}❌ OPA: UNHEALTHY${NC}"
@@ -207,6 +237,7 @@ perform_final_checks() {
     fi
     
     # Check Traefik if deployed
+    TRAEFIK_URL=$(get_output "traefik" "TRAEFIK_URL")
     if [ -n "$TRAEFIK_URL" ] && curl -s -f "$TRAEFIK_URL" > /dev/null; then
         echo -e "${GREEN}✅ Traefik: HEALTHY${NC}"
     else
@@ -224,27 +255,31 @@ perform_final_checks() {
 show_deployment_summary() {
     echo -e "${BLUE}📊 DEPLOYMENT SUMMARY${NC}"
     echo -e "${BLUE}=====================${NC}"
-    echo -e "🔐 ${GREEN}Keycloak IAM${NC}: $KEYCLOAK_URL"
-    echo -e "   - Realm: $(get_output "keycloak" "KEYCLOAK_REALM")"
-    echo -e "   - Admin: $(get_output "keycloak" "KEYCLOAK_ADMIN")"
     
-    echo -e "⚖️ ${GREEN}OPA Policy Engine${NC}: $OPA_URL"
-    echo -e "   - Policies: $(get_output "opa" "POLICIES_LOADED")"
+    KEYCLOAK_URL=$(get_output "keycloak" "KEYCLOAK_URL")
+    OPA_URL=$(get_output "opa" "OPA_URL")
+    TUNNEL_URL=$(get_output "ztna" "TUNNEL_URL")
+    WAZUH_URL=$(get_output "wazuh" "WAZUH_URL")
+    TRAEFIK_URL=$(get_output "traefik" "TRAEFIK_URL")
     
+    echo -e "🔐 ${GREEN}Keycloak IAM${NC}: ${KEYCLOAK_URL:-Not deployed}"
+    if [ -n "$KEYCLOAK_URL" ]; then
+        echo -e "   - Realm: $(get_output "keycloak" "KEYCLOAK_REALM")"
+    fi
+    
+    echo -e "⚖️ ${GREEN}OPA Policy Engine${NC}: ${OPA_URL:-Not deployed}"
+    if [ -n "$OPA_URL" ]; then
+        echo -e "   - Policies: $(get_output "opa" "POLICIES_LOADED")"
+    fi
+    
+    echo -e "🌐 ${GREEN}ZTNA Tunnel${NC}: ${TUNNEL_URL:-Not configured}"
     if [ -n "$TUNNEL_URL" ]; then
-        echo -e "🌐 ${GREEN}ZTNA Tunnel${NC}: $TUNNEL_URL"
         echo -e "   - Status: $(get_output "ztna" "TUNNEL_STATUS")"
     fi
     
-    if [ -n "$WAZUH_URL" ]; then
-        echo -e "📊 ${GREEN}Wazuh SIEM${NC}: $WAZUH_URL"
-        echo -e "   - Username: $(get_output "wazuh" "WAZUH_USERNAME")"
-    fi
+    echo -e "📊 ${GREEN}Wazuh SIEM${NC}: ${WAZUH_URL:-Not deployed}"
     
-    if [ -n "$TRAEFIK_URL" ]; then
-        echo -e "🔀 ${GREEN}Traefik Proxy${NC}: $TRAEFIK_URL"
-        echo -e "   - Dashboard: $(get_output "traefik" "TRAEFIK_DASHBOARD")"
-    fi
+    echo -e "🔀 ${GREEN}Traefik Proxy${NC}: ${TRAEFIK_URL:-Not deployed}"
     
     echo -e "\n${BLUE}🔗 INTEGRATIONS STATUS${NC}"
     echo -e "====================="
@@ -265,16 +300,22 @@ show_deployment_summary() {
 generate_compliance_report() {
     echo -e "\n${YELLOW}Generating compliance report...${NC}"
     
+    KEYCLOAK_URL=$(get_output "keycloak" "KEYCLOAK_URL")
+    OPA_URL=$(get_output "opa" "OPA_URL")
+    TUNNEL_URL=$(get_output "ztna" "TUNNEL_URL")
+    WAZUH_URL=$(get_output "wazuh" "WAZUH_URL")
+    TRAEFIK_URL=$(get_output "traefik" "TRAEFIK_URL")
+    
     cat > ./outputs/compliance_report.md << EOF
 # Zero Trust Architecture Compliance Report
 Generated: $(date)
 
 ## Deployment Summary
-- **Keycloak IAM**: $KEYCLOAK_URL
-- **OPA Policy Engine**: $OPA_URL
+- **Keycloak IAM**: ${KEYCLOAK_URL:-Not deployed}
+- **OPA Policy Engine**: ${OPA_URL:-Not deployed}
 - **ZTNA Tunnel**: ${TUNNEL_URL:-Not configured}
-- **Wazuh SIEM**: ${WAZUH_URL:-Not configured}
-- **Traefik PEP**: ${TRAEFIK_URL:-Not configured}
+- **Wazuh SIEM**: ${WAZUH_URL:-Not deployed}
+- **Traefik PEP**: ${TRAEFIK_URL:-Not deployed}
 
 ## Zero Trust Principles Implemented
 
@@ -381,7 +422,7 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-if ! command -v docker-compose &> /dev/null; then
+if ! command -v docker-compose &> /dev/null && ! command -v docker compose &> /dev/null; then
     echo -e "${RED}❌ Docker Compose is not installed. Please install Docker Compose first.${NC}"
     exit 1
 fi

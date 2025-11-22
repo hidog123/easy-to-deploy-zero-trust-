@@ -1,119 +1,71 @@
 #!/bin/bash
 
-echo "🔐 Deploying Keycloak IAM..."
+echo "⚖️ Deploying OPA Policy Engine..."
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
-# Set default values if config file doesn't exist
-if [ -f "./config/keycloak.env" ]; then
-    source "./config/keycloak.env"
-else
-    echo "⚠️ Keycloak config not found, using defaults"
-    KEYCLOAK_ADMIN=admin
-    KEYCLOAK_ADMIN_PASSWORD=admin123
-    KEYCLOAK_DB_PASSWORD=keycloakdb123
-fi
+# Create policies directory
+mkdir -p ./policies
 
-# Create Keycloak docker-compose with compatible version
-cat > docker-compose-keycloak.yml << 'EOF'
-version: '3.8'
+# Simple ABAC policy
+cat > ./policies/abac_policies.rego << 'EOF'
+package zta.abac
 
-services:
-  postgres:
-    image: postgres:15
-    container_name: postgres-keycloak
-    environment:
-      POSTGRES_DB: keycloak
-      POSTGRES_USER: keycloak
-      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
-    networks:
-      - zt-network
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U keycloak"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+default allow = false
 
-  keycloak:
-    image: quay.io/keycloak/keycloak:latest
-    container_name: keycloak
-    environment:
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
-      KC_DB_USERNAME: keycloak
-      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
-      KC_HOSTNAME: localhost
-      KC_HTTP_ENABLED: "true"
-    command: start-dev
-    ports:
-      - "8080:8080"
-    networks:
-      - zt-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+allow {
+    # Identity verification
+    input.identity.authenticated == true
+    input.identity.roles[_] == "user"
+    
+    # Basic context checks
+    input.context.geolocation == "FR"
+    input.context.hour >= 8
+    input.context.hour <= 18
+    
+    # Device compliance
+    input.device.compliant == true
+}
 
-volumes:
-  postgres_data:
+# Risk scoring policy
+package zta.risk
 
-networks:
-  zt-network:
-    external: true
-    name: zt-network
+risk_score := 0.1 {
+    input.context.geolocation == "FR"
+} else := 0.8
+
+risk_score := 0.1 {
+    input.device.compliant == true
+} else := 0.9
 EOF
 
-# Start Keycloak with environment variables
-KEYCLOAK_ADMIN="$KEYCLOAK_ADMIN" \
-KEYCLOAK_ADMIN_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD" \
-KEYCLOAK_DB_PASSWORD="$KEYCLOAK_DB_PASSWORD" \
-docker-compose -f docker-compose-keycloak.yml up -d
+# Deploy OPA
+docker run -d \
+  --name opa \
+  --network zt-network \
+  -p 8181:8181 \
+  -v "$(pwd)/policies:/policies" \
+  openpolicyagent/opa:latest \
+  run --server --log-level debug /policies/
 
-# Wait for Keycloak to be ready
-echo "⏳ Waiting for Keycloak to start..."
-MAX_WAIT=60
-WAITED=0
-while [ $WAITED -lt $MAX_WAIT ]; do
-    if curl -s -f http://localhost:8080/health/ready > /dev/null 2>&1; then
-        echo "✅ Keycloak is ready!"
-        break
-    fi
-    echo "⏳ Waiting for Keycloak... ($((WAITED + 5))s)"
-    sleep 5
-    WAITED=$((WAITED + 5))
-done
-
-if [ $WAITED -ge $MAX_WAIT ]; then
-    echo "❌ Keycloak failed to start within $MAX_WAIT seconds"
-    docker-compose -f docker-compose-keycloak.yml logs keycloak
-    exit 1
-fi
-
-# Simple configuration - skip complex setup for demo
-echo "⚙️ Performing basic Keycloak configuration..."
-
-# Wait a bit more for full startup
+# Wait for OPA
+echo "⏳ Waiting for OPA to start..."
 sleep 10
 
-# Write outputs
-echo "KEYCLOAK_URL=http://localhost:8080" > ./outputs/keycloak_outputs.txt
-echo "KEYCLOAK_REALM=master" >> ./outputs/keycloak_outputs.txt
-echo "OPA_CLIENT_SECRET=opa-secret-key-123" >> ./outputs/keycloak_outputs.txt
-echo "TRAEFIK_CLIENT_SECRET=traefik-secret-key-123" >> ./outputs/keycloak_outputs.txt
-echo "KEYCLOAK_ADMIN=$KEYCLOAK_ADMIN" >> ./outputs/keycloak_outputs.txt
-echo "KEYCLOAK_ADMIN_PASSWORD=$KEYCLOAK_ADMIN_PASSWORD" >> ./outputs/keycloak_outputs.txt
+until curl -s http://localhost:8181/health > /dev/null; do
+    sleep 2
+done
 
-echo "✅ Keycloak deployment complete - Access: http://localhost:8080"
-echo "   Username: $KEYCLOAK_ADMIN"
-echo "   Password: $KEYCLOAK_ADMIN_PASSWORD"
+# Load policies
+curl -X PUT http://localhost:8181/v1/policies/abac \
+  --data-binary @./policies/abac_policies.rego
+
+# Write outputs
+echo "OPA_URL=http://localhost:8181" > ./outputs/opa_outputs.txt
+echo "POLICIES_LOADED=abac,risk" >> ./outputs/opa_outputs.txt
+echo "STATUS=active" >> ./outputs/opa_outputs.txt
+
+echo "✅ OPA deployment complete - Access: http://localhost:8181"

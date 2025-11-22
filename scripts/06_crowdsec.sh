@@ -1,47 +1,21 @@
 #!/bin/bash
 
-WAZUH_URL=${1:-https://localhost:55000}
-
 echo "🛡️ Deploying CrowdSec..."
 
-# Install CrowdSec
-curl -s https://packagecloud.io/install/repositories/crowdsec/crowdsec/script.deb.sh | bash
-apt-get install crowdsec -y
+# Get script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
 
-# Install common collections
-cscli collections install crowdsecurity/linux
-cscli collections install crowdsecurity/ssh
-cscli collections install crowdsecurity/http
-
-# Configure Wazuh integration
-cat > /etc/crowdsec/acquis.yaml << EOF
-filenames:
-  - /var/ossec/logs/alerts/alerts.json
-labels:
-  type: wazuh-alerts
-EOF
-
-# Start CrowdSec
-systemctl enable crowdsec
-systemctl start crowdsec
-
-# Create OPA integration for decision sharing
-cat > ../config/crowdsec_opa.conf << EOF
-# CrowdSec-OPA Integration
-[opa]
-  enabled = true
-  endpoint = "http://opa:8181/v1/data/crowdsec/decisions"
-  update_frequency = "30s"
-
-[wazuh]
-  endpoint = "$WAZUH_URL"
-  api_key = "wazuh-crowdsec-integration"
-EOF
+# Simple CrowdSec demo
+docker run -d \
+  --name crowdsec \
+  --network zt-network \
+  -p 8082:8080 \
+  crowdsecurity/crowdsec:latest
 
 # Write outputs
-echo "CROWDSEC_API=http://localhost:8080" > ../outputs/crowdsec_outputs.txt
-echo "CROWDSEC_STATUS=active" >> ../outputs/crowdsec_outputs.txt
-echo "WAZUH_INTEGRATED=true" >> ../outputs/crowdsec_outputs.txt
-echo "OPA_INTEGRATED=true" >> ../outputs/crowdsec_outputs.txt
+echo "CROWDSEC_API=http://localhost:8082" > ./outputs/crowdsec_outputs.txt
+echo "STATUS=active" >> ./outputs/crowdsec_outputs.txt
 
-echo "✅ CrowdSec deployment complete"
+echo "✅ CrowdSec deployment complete - Demo API: http://localhost:8082"

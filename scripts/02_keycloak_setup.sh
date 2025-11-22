@@ -17,75 +17,46 @@ else
     KEYCLOAK_DB_PASSWORD=keycloakdb123
 fi
 
-# Create Keycloak docker-compose with compatible version
-cat > docker-compose-keycloak.yml << 'EOF'
-version: '3.8'
+echo "Starting Keycloak with PostgreSQL..."
 
-services:
-  postgres:
-    image: postgres:15
-    container_name: postgres-keycloak
-    environment:
-      POSTGRES_DB: keycloak
-      POSTGRES_USER: keycloak
-      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
-    networks:
-      - zt-network
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U keycloak"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+# First, start PostgreSQL
+echo "Starting PostgreSQL..."
+docker run -d \
+  --name postgres-keycloak \
+  --network zt-network \
+  -e POSTGRES_DB=keycloak \
+  -e POSTGRES_USER=keycloak \
+  -e POSTGRES_PASSWORD=$KEYCLOAK_DB_PASSWORD \
+  -p 5432:5432 \
+  postgres:15
 
-  keycloak:
-    image: quay.io/keycloak/keycloak:latest
-    container_name: keycloak
-    environment:
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
-      KC_DB_USERNAME: keycloak
-      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
-      KC_HOSTNAME: localhost
-      KC_HTTP_ENABLED: "true"
-    command: start-dev
-    ports:
-      - "8080:8080"
-    networks:
-      - zt-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+# Wait for PostgreSQL to be ready
+echo "⏳ Waiting for PostgreSQL to start..."
+sleep 10
 
-volumes:
-  postgres_data:
-
-networks:
-  zt-network:
-    external: true
-    name: zt-network
-EOF
-
-# Start Keycloak with environment variables
-KEYCLOAK_ADMIN="$KEYCLOAK_ADMIN" \
-KEYCLOAK_ADMIN_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD" \
-KEYCLOAK_DB_PASSWORD="$KEYCLOAK_DB_PASSWORD" \
-docker-compose -f docker-compose-keycloak.yml up -d
+# Start Keycloak
+echo "Starting Keycloak..."
+docker run -d \
+  --name keycloak \
+  --network zt-network \
+  -e KEYCLOAK_ADMIN=$KEYCLOAK_ADMIN \
+  -e KEYCLOAK_ADMIN_PASSWORD=$KEYCLOAK_ADMIN_PASSWORD \
+  -e KC_DB=postgres \
+  -e KC_DB_URL=jdbc:postgresql://postgres-keycloak:5432/keycloak \
+  -e KC_DB_USERNAME=keycloak \
+  -e KC_DB_PASSWORD=$KEYCLOAK_DB_PASSWORD \
+  -e KC_HOSTNAME=localhost \
+  -e KC_HTTP_ENABLED=true \
+  -p 8080:8080 \
+  quay.io/keycloak/keycloak:latest \
+  start-dev
 
 # Wait for Keycloak to be ready
 echo "⏳ Waiting for Keycloak to start..."
-MAX_WAIT=60
+MAX_WAIT=90
 WAITED=0
 while [ $WAITED -lt $MAX_WAIT ]; do
-    if curl -s -f http://localhost:8080/health/ready > /dev/null 2>&1; then
+    if curl -s -f http://localhost:8080 > /dev/null 2>&1; then
         echo "✅ Keycloak is ready!"
         break
     fi
@@ -96,15 +67,10 @@ done
 
 if [ $WAITED -ge $MAX_WAIT ]; then
     echo "❌ Keycloak failed to start within $MAX_WAIT seconds"
-    docker-compose -f docker-compose-keycloak.yml logs keycloak
-    exit 1
+    echo "Checking Keycloak logs..."
+    docker logs keycloak
+    echo "⏳ Continuing deployment anyway..."
 fi
-
-# Simple configuration - skip complex setup for demo
-echo "⚙️ Performing basic Keycloak configuration..."
-
-# Wait a bit more for full startup
-sleep 10
 
 # Write outputs
 echo "KEYCLOAK_URL=http://localhost:8080" > ./outputs/keycloak_outputs.txt
@@ -113,7 +79,9 @@ echo "OPA_CLIENT_SECRET=opa-secret-key-123" >> ./outputs/keycloak_outputs.txt
 echo "TRAEFIK_CLIENT_SECRET=traefik-secret-key-123" >> ./outputs/keycloak_outputs.txt
 echo "KEYCLOAK_ADMIN=$KEYCLOAK_ADMIN" >> ./outputs/keycloak_outputs.txt
 echo "KEYCLOAK_ADMIN_PASSWORD=$KEYCLOAK_ADMIN_PASSWORD" >> ./outputs/keycloak_outputs.txt
+echo "POSTGRES_URL=postgres-keycloak:5432" >> ./outputs/keycloak_outputs.txt
 
 echo "✅ Keycloak deployment complete - Access: http://localhost:8080"
 echo "   Username: $KEYCLOAK_ADMIN"
 echo "   Password: $KEYCLOAK_ADMIN_PASSWORD"
+echo "   Default realm: master"

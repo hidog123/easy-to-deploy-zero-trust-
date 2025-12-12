@@ -1,0 +1,2 @@
+﻿OPA_URL=http://localhost:8181
+STATUS=active

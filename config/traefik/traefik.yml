@@ -1,0 +1,14 @@
+﻿api:
+  dashboard: true
+  insecure: true
+entryPoints:
+  web:
+    address: ":80"
+  traefik:
+    address: ":9000"
+providers:
+  docker:
+    endpoint: "npipe:////./pipe/docker_engine"
+    exposedByDefault: false
+log:
+  level: INFO

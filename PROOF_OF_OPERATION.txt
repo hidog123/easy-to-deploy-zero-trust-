@@ -1,0 +1,56 @@
+﻿
+    ZERO TRUST ARCHITECTURE - PROOF OF OPERATION REPORT
+═
+
+Date: 2025-12-02 19:39:35
+System: Windows
+Location: D:\easy-to-deploy-zero-trust-
+
+DEPLOYED COMPONENTS:
+
+traefik - Up 33 minutes - Ports: 0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:9000->9000/tcp, [::]:9000->9000/tcp ztna-tunnel - Up 33 minutes - Ports: 0.0.0.0:8081->80/tcp, [::]:8081->80/tcp opa - Up 34 minutes - Ports: 0.0.0.0:8181->8181/tcp, [::]:8181->8181/tcp keycloak - Up 34 minutes - Ports: 0.0.0.0:8080->8080/tcp, [::]:8080->8080/tcp
+
+SECURITY TEST RESULTS:
+
+Test 1: Unauthenticated Access Attempt
+  Request: { authenticated: false, compliant: true }
+  Expected: DENY
+  Result: DENY 
+  Status: PASS
+
+Test 2: Compromised Device Access Attempt
+  Request: { authenticated: true, compliant: false }
+  Expected: DENY
+  Result: DENY 
+  Status: PASS
+
+Test 3: Legitimate User Access
+  Request: { authenticated: true, compliant: true }
+  Expected: ALLOW
+  Result: ALLOW 
+  Status: PASS
+
+NETWORK CONFIGURATION:
+
+Docker Network: zt-network
+Subnet: 172.23.0.0/16
+
+SERVICE ENDPOINTS:
+
+ Keycloak IAM:      http://localhost:8080
+ OPA Policy Engine: http://localhost:8181
+ Traefik Gateway:   http://localhost:9000
+ ZTNA Tunnel:       http://localhost:8081
+ CrowdSec:          http://localhost:8083
+
+CONCLUSION:
+
+ All components operational
+ Zero Trust policies actively enforced
+ Security tests: 3/3 PASSED
+ System Status: FULLY OPERATIONAL
+
+This Zero Trust Architecture successfully implements the
+'Never Trust, Always Verify' security model.
+
+

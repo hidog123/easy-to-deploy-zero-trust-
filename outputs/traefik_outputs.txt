@@ -1,0 +1,2 @@
+﻿TRAEFIK_URL=http://localhost:9000
+STATUS=active

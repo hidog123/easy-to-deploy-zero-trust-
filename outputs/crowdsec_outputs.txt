@@ -1,0 +1,2 @@
+﻿CROWDSEC_API=http://localhost:8083
+STATUS=active

@@ -1,68 +1,50 @@
 package kafka.authz
 
-default allow = false
+import future.keywords.if
 
-# Allow everything that is not explicitly denied
-allow {
-  not deny
-}
+default allow := false
 
-# Deny block
-deny {
-  is_read_operation
-  track_topic
-  not consumer_is_whitelisted_for_foo
-}
-
-# Format: "easy_to_read_client_name": {"client_name_in_keycloak"}
-consumer_whitelist = {
-  "test_consumer": {"test_consumer"},
-}
-
-topic_metadata = {
-  "foo": {"tags": ["foo"]},
-  "bar": {"tags": ["bar"]},
-}
-
-#-----------------------------------
-# Helpers for checking topic access.
-#-----------------------------------
-
-foo_topic {
-  topic_metadata[topic_name].tags[_] == "foo"
-}
-
-bar_topic {
-  topic_metadata[topic_name].tags[_] == "bar"
-}
-
-# Grant the 'test_consumer' user access to read from the 'foo' topic
-consumer_is_whitelisted_for_foo {
-  consumer_whitelist.test_consumer[_] == principal.name
-}
-
-# Helpers for processing Kafka operation input.
-is_read_operation {
-  input.operation.name == "Read"
-}
-
-is_write_operation {
-  input.operation.name == "Write"
-}
-
-is_topic_resource {
-  input.resource.resourceType.name == "Topic"
-}
-
-topic_name = input.resource.name {
-  is_topic_resource
-}
-
-track_topic {
-  topic_name == "foo"
-}
-
-# This is where we grab the name of the user that was set when creating the JWT for the authenticated user
-principal = {"name": name} {
-  name := input.session.sanitizedUser
+# Allow rules
+allow if {
+    # Get the user from the JWT
+    user := input.session.sanitizedUser
+    
+    # Define access matrix
+    access_matrix := {
+        "admin": {
+            "operations": ["Read", "Write", "Create", "Delete", "Alter", "Describe", "ClusterAction"],
+            "resources": ["Topic", "Group", "Cluster", "TransactionalId"]
+        },
+        "kafka-broker": {
+            "operations": ["ClusterAction", "Describe"],
+            "resources": ["Cluster"]
+        },
+        "test-producer": {
+            "operations": ["Write", "Describe"],
+            "resources": ["Topic"],
+            "topics": ["secure-data", "audit-logs"]
+        },
+        "test-consumer": {
+            "operations": ["Read", "Describe"],
+            "resources": ["Topic", "Group"],
+            "topics": ["secure-data"]
+        },
+        "kafka-ui": {
+            "operations": ["Read", "Describe"],
+            "resources": ["Topic", "Group", "Cluster"]
+        }
+    }
+    
+    # Check if user exists in matrix
+    user_rules := access_matrix[user]
+    
+    # Check operation
+    input.operation.name in user_rules.operations
+    
+    # Check resource type
+    input.resource.resourceType.name in user_rules.resources
+    
+    # Check specific topics if specified
+    not user_rules.topics  # No topic restrictions
+    or user_rules.topics[_] == input.resource.name
 }

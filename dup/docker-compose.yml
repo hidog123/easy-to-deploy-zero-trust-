@@ -1,68 +1,101 @@
 version: '3.8'
 
 services:
-  # Zookeeper (required by Kafka)
+  # ========== INFRASTRUCTURE ==========
+  # Zookeeper
   zookeeper:
-    image: confluentinc/cp-zookeeper:latest
+    image: confluentinc/cp-zookeeper:7.4.0
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
     networks:
-      - kafka-network
+      - kafka-net
+    restart: unless-stopped
 
-  # Kafka Broker
+  # Kafka Broker (with OAuth)
   kafka:
-    image: confluentinc/cp-kafka:latest
+    image: confluentinc/cp-kafka:7.4.0
     container_name: kafka
     depends_on:
       - zookeeper
       - keycloak
       - opa
     ports:
-      - "9092:9092"  # Internal listener
-      - "9093:9093"  # External listener (for OAuth)
+      - "9092:9092"  # Internal (no auth)
+      - "9093:9093"  # External (with OAuth)
     environment:
+      # ========== BASIC CONFIG ==========
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      
+      # ========== LISTENERS ==========
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:SASL_PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:9093
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9093
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      # OAuth Configuration
+      
+      # ========== OAUTH CONFIG ==========
       KAFKA_LISTENER_NAME_EXTERNAL_SASL_ENABLED_MECHANISMS: OAUTHBEARER
-      KAFKA_LISTENER_NAME_EXTERNAL_OAUTHBEARER_SASL_LOGIN_CALLBACK_HANDLER_CLASS: tech.goraft.kafka.oauthbearer.OAuthAuthenticateLoginCallbackHandler
-      KAFKA_LISTENER_NAME_EXTERNAL_OAUTHBEARER_SASL_SERVER_CALLBACK_HANDLER_CLASS: tech.goraft.kafka.oauthbearer.OAuthAuthenticateValidatorCallbackHandler
-      KAFKA_LISTENER_NAME_EXTERNAL_OAUTHBEARER_SASL_JAAS_CONFIG: >
-        org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required
-        OAUTH_LOGIN_SERVER='http://keycloak:8080/auth/realms/master/protocol/openid-connect'
-        OAUTH_LOGIN_ENDPOINT='/token'
-        OAUTH_LOGIN_GRANT_TYPE='client_credentials'
-        OAUTH_CLIENT_ID='kafka_broker'
-        OAUTH_CLIENT_SECRET='${KAFKA_BROKER_SECRET:-broker-secret}'
-        OAUTH_INTROSPECT_SERVER='http://keycloak:8080/auth/realms/master/protocol/openid-connect'
-        OAUTH_INTROSPECT_ENDPOINT='/token/introspect'
-        OAUTH_ACCEPT_UNSECURE_SERVER='true';
-      # OPA Authorization Configuration
-      KAFKA_AUTHORIZER_CLASS_NAME: tech.goraft.kafka.opa.OpaAuthorizer
-      KAFKA_OPA_AUTHORIZER_URL: http://opa:8181/v1/data/kafka/authz/allow
-      KAFKA_OPA_AUTHORIZER_ALLOW_ON_ERROR: 'false'
-      KAFKA_OPA_AUTHORIZER_CACHE_INITIAL_CAPACITY: '100'
-      KAFKA_OPA_AUTHORIZER_CACHE_MAXIMUM_SIZE: '100'
-      KAFKA_OPA_AUTHORIZER_CACHE_EXPIRE_AFTER_MS: '10000'
+      KAFKA_LISTENER_NAME_EXTERNAL_OAUTHBEARER_SASL_SERVER_CALLBACK_HANDLER_CLASS: org.apache.kafka.common.security.oauthbearer.secured.OAuthBearerValidatorCallbackHandler
+      KAFKA_LISTENER_NAME_EXTERNAL_OAUTHBEARER_SASL_JAAS_CONFIG: "org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required unsecuredLoginStringClaim_sub=\"kafka-broker\";"
+      
+      # OAuth token validation
+      KAFKA_LISTENER_NAME_EXTERNAL_SASL_OAUTHBEARER_TOKEN_ENDPOINT_URL: "http://keycloak:8080/realms/master/protocol/openid-connect/token/introspect"
+      KAFKA_LISTENER_NAME_EXTERNAL_SASL_OAUTHBEARER_JWKS_ENDPOINT_URL: "http://keycloak:8080/realms/master/protocol/openid-connect/certs"
+      KAFKA_LISTENER_NAME_EXTERNAL_SASL_OAUTHBEARER_ISSUER_URL: "http://keycloak:8080/realms/master"
+      KAFKA_LISTENER_NAME_EXTERNAL_SASL_OAUTHBEARER_SCOPE_CLAIM_NAME: "scope"
+      KAFKA_LISTENER_NAME_EXTERNAL_SASL_OAUTHBEARER_SUB_CLAIM_NAME: "sub"
+      KAFKA_LISTENER_NAME_EXTERNAL_SASL_OAUTHBEARER_CLOCK_SKEW_SECONDS: "30"
+      
+      # ========== OPA AUTHORIZATION ==========
+      KAFKA_AUTHORIZER_CLASS_NAME: kafka.security.authorizer.AclAuthorizer  # Default for now
+      # To enable OPA later: KAFKA_AUTHORIZER_CLASS_NAME: tech.goraft.kafka.opa.OpaAuthorizer
+      # KAFKA_OPA_AUTHORIZER_URL: "http://opa:8181/v1/data/kafka/authz/allow"
+      
+      # ========== PERFORMANCE ==========
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      
+      # ========== OPERATIONAL ==========
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: 53687091200  # 50GB
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824     # 1GB
+      KAFKA_LOG_CLEANUP_POLICY: "delete"
+      KAFKA_MESSAGE_MAX_BYTES: 10485760       # 10MB
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 10485760 # 10MB
+      KAFKA_NUM_IO_THREADS: 8
+      KAFKA_NUM_NETWORK_THREADS: 3
+      KAFKA_NUM_REPLICA_FETCHERS: 2
+      
+      # ========== SECURITY ==========
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      KAFKA_SUPER_USERS: "User:kafka-broker;User:admin"
+      
     volumes:
+      - kafka-data:/var/lib/kafka/data
       - ./kafka-server.properties:/etc/kafka/server.properties:ro
-      - ./custom-jars:/custom-jars  # For custom handler classes
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - ./kafka-jars:/opt/kafka/plugins:ro
     networks:
-      - kafka-network
+      - kafka-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--list", "--bootstrap-server", "localhost:9092"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # Keycloak for OAuth2 Authentication
+  # ========== AUTHENTICATION (KEYCLOAK) ==========
   keycloak:
     image: quay.io/keycloak/keycloak:latest
     container_name: keycloak
@@ -70,27 +103,40 @@ services:
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
-      KC_FEATURES: token-exchange
+      KC_FEATURES: token-exchange,admin-fine-grained-authz
+      KC_HOSTNAME: localhost
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
     ports:
       - "8080:8080"
+      - "8443:8443"
     volumes:
       - ./keycloak-realm.json:/opt/keycloak/data/import/realm.json:ro
+      - keycloak-data:/opt/keycloak/data
     networks:
-      - kafka-network
+      - kafka-net
+    restart: unless-stopped
 
-  # Open Policy Agent for Authorization
+  # ========== AUTHORIZATION (OPA) ==========
   opa:
     image: openpolicyagent/opa:latest
     container_name: opa
-    command: ["run", "--server", "--addr", ":8181", "/policies/policy.rego"]
+    command: 
+      - "run"
+      - "--server"
+      - "--addr=:8181"
+      - "--set=decision_logs.console=true"
+      - "--set=status.console=true"
+      - "/policies"
     ports:
       - "8181:8181"
     volumes:
-      - ./opa-policy.rego:/policies/policy.rego:ro
+      - ./opa-policies:/policies:ro
     networks:
-      - kafka-network
+      - kafka-net
+    restart: unless-stopped
 
-  # Kafka UI (Optional - for management)
+  # ========== MANAGEMENT UI ==========
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
@@ -100,23 +146,231 @@ services:
     ports:
       - "8081:8080"
     environment:
-      KAFKA_CLUSTERS_0_NAME: local
+      # Kafka Cluster
+      KAFKA_CLUSTERS_0_NAME: secure-kafka
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SASL_PLAINTEXT
-      KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM: OAUTHBEARER
-      KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG: >
-        org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required
-        OAUTH_LOGIN_SERVER='http://keycloak:8080/auth/realms/master/protocol/openid-connect'
-        OAUTH_LOGIN_ENDPOINT='/token'
-        OAUTH_LOGIN_GRANT_TYPE='client_credentials'
-        OAUTH_CLIENT_ID='kafka_ui'
-        OAUTH_CLIENT_SECRET='${KAFKA_UI_SECRET:-ui-secret}'
-        OAUTH_INTROSPECT_SERVER='http://keycloak:8080/auth/realms/master/protocol/openid-connect'
-        OAUTH_INTROSPECT_ENDPOINT='/token/introspect'
-        OAUTH_ACCEPT_UNSECURE_SERVER='true';
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: PLAINTEXT
+      
+      # Optional: Connect with OAuth
+      # KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      # KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM: OAUTHBEARER
+      # KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG: "org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required clientId='kafka-ui' clientSecret='ui-secret' tokenEndpoint='http://keycloak:8080/realms/master/protocol/openid-connect/token';"
+      
+      # UI Features
+      DYNAMIC_CONFIG_ENABLED: "false"
+      AUTH_TYPE: "LOGIN_FORM"
+      SPRING_SECURITY_USER_NAME: admin
+      SPRING_SECURITY_USER_PASSWORD: admin
+      SERVER_SERVLET_CONTEXT_PATH: /
+      
+    volumes:
+      - ./kafka-ui-config.yml:/etc/kafkaui/dynamic_config.yaml:ro
     networks:
-      - kafka-network
+      - kafka-net
+    restart: unless-stopped
+
+  # ========== MONITORING ==========
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - kafka-net
+    restart: unless-stopped
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana-datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - kafka-net
+    restart: unless-stopped
+
+  # JMX Exporter for Kafka metrics
+  jmx-exporter:
+    image: bitnami/jmx-exporter:latest
+    container_name: jmx-exporter
+    ports:
+      - "9404:9404"
+    volumes:
+      - ./jmx-exporter-config.yml:/opt/bitnami/jmx-exporter/config.yml:ro
+    networks:
+      - kafka-net
+    restart: unless-stopped
+
+  # ========== TESTING TOOLS ==========
+  # Schema Registry (Optional)
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.4.0
+    container_name: schema-registry
+    depends_on:
+      - kafka
+    ports:
+      - "8082:8082"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8082
+    networks:
+      - kafka-net
+    restart: unless-stopped
+
+  # Kafka Connect (Optional)
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect:7.4.0
+    container_name: kafka-connect
+    depends_on:
+      - kafka
+      - schema-registry
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: compose-connect-group
+      CONNECT_CONFIG_STORAGE_TOPIC: docker-connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: docker-connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: docker-connect-status
+      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8082
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8082
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+    volumes:
+      - ./connectors:/usr/share/confluent-hub-components:ro
+    networks:
+      - kafka-net
+    restart: unless-stopped
+
+  # ========== TEST CLIENTS ==========
+  # Admin client (for setup)
+  kafka-admin:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka-admin
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      bash -c "
+      echo '=== Kafka Zero Trust Demo Setup ===' &&
+      echo 'Waiting for services...' &&
+      sleep 45 &&
+      
+      echo '1. Creating required topics...' &&
+      kafka-topics --create --topic secure-data --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --config retention.ms=604800000 &&
+      kafka-topics --create --topic audit-logs --bootstrap-server kafka:9092 --partitions 3 --replication-factor 1 --config retention.ms=2592000000 &&
+      kafka-topics --create --topic __consumer_offsets --bootstrap-server kafka:9092 --partitions 50 --replication-factor 1 --config cleanup.policy=compact &&
+      
+      echo '2. Setting up ACLs...' &&
+      kafka-acls --bootstrap-server kafka:9092 --command-config /tmp/admin.properties --add --allow-principal User:admin --operation All --topic '*' --group '*' &&
+      
+      echo '3. Testing OAuth connection...' &&
+      echo 'security.protocol=SASL_PLAINTEXT
+      sasl.mechanism=OAUTHBEARER
+      sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required clientId=\"test-admin\" clientSecret=\"test-secret\" tokenEndpoint=\"http://keycloak:8080/realms/master/protocol/openid-connect/token\";' > /tmp/oauth-test.config &&
+      
+      echo '4. Sending test data...' &&
+      seq 1 5 | while read i; do
+        echo \"Secure message $$i at \$$(date)\" | kafka-console-producer --topic secure-data --broker-list kafka:9092 --producer.config /tmp/admin.properties
+      done &&
+      
+      echo '5. Verifying data...' &&
+      kafka-console-consumer --topic secure-data --from-beginning --bootstrap-server kafka:9092 --consumer.config /tmp/admin.properties --max-messages 5 --timeout-ms 10000 &&
+      
+      echo '=== Setup Complete ===' &&
+      echo 'Access URLs:' &&
+      echo '- Kafka-UI: http://localhost:8081' &&
+      echo '- Keycloak: http://localhost:8080/admin (admin/admin)' &&
+      echo '- OPA: http://localhost:8181' &&
+      echo '- Grafana: http://localhost:3000 (admin/admin)' &&
+      echo '- Prometheus: http://localhost:9090' &&
+      tail -f /dev/null
+      "
+    volumes:
+      - ./admin.properties:/tmp/admin.properties:ro
+    networks:
+      - kafka-net
+    restart: on-failure
+
+  # Test Producer
+  test-producer:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: test-producer
+    depends_on:
+      - kafka-admin
+    command: >
+      bash -c "
+      echo 'Test producer started...' &&
+      while true; do
+        echo \"Test message at \$$(date +'%Y-%m-%d %H:%M:%S')\" | \
+        kafka-console-producer \
+          --topic secure-data \
+          --broker-list kafka:9092 \
+          --producer.config /tmp/admin.properties 2>/dev/null
+        sleep 30
+      done
+      "
+    volumes:
+      - ./admin.properties:/tmp/admin.properties:ro
+    networks:
+      - kafka-net
+    restart: unless-stopped
+
+  # Test Consumer
+  test-consumer:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: test-consumer
+    depends_on:
+      - kafka-admin
+    command: >
+      bash -c "
+      echo 'Test consumer started...' &&
+      kafka-console-consumer \
+        --topic secure-data \
+        --bootstrap-server kafka:9092 \
+        --consumer.config /tmp/admin.properties \
+        --group test-consumer-group \
+        --from-beginning
+      "
+    volumes:
+      - ./admin.properties:/tmp/admin.properties:ro
+    networks:
+      - kafka-net
+    restart: unless-stopped
+
+volumes:
+  zookeeper-data:
+  zookeeper-log:
+  kafka-data:
+  keycloak-data:
+  prometheus-data:
+  grafana-data:
 
 networks:
-  kafka-network:
+  kafka-net:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

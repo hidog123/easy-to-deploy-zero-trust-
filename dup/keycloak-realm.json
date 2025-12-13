@@ -1,49 +1,75 @@
 {
-  "id": "master",
   "realm": "master",
   "enabled": true,
   "clients": [
     {
-      "clientId": "kafka_broker",
+      "clientId": "kafka-broker",
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
       "secret": "broker-secret",
       "protocol": "openid-connect",
       "publicClient": false,
-      "standardFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": true,
-      "authorizationServicesEnabled": true,
+      "directAccessGrantsEnabled": true,
       "attributes": {
         "access.token.lifespan": "3600"
       }
     },
     {
-      "clientId": "test_consumer",
-      "enabled": true,
-      "clientAuthenticatorType": "client-secret",
-      "secret": "consumer-secret",
-      "protocol": "openid-connect",
-      "publicClient": false,
-      "standardFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
-      "serviceAccountsEnabled": true,
-      "attributes": {
-        "access.token.lifespan": "3600"
-      }
-    },
-    {
-      "clientId": "kafka_ui",
+      "clientId": "kafka-ui",
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
       "secret": "ui-secret",
       "protocol": "openid-connect",
       "publicClient": false,
-      "standardFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": true,
-      "attributes": {
-        "access.token.lifespan": "3600"
+      "directAccessGrantsEnabled": true
+    },
+    {
+      "clientId": "test-producer",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "producer-secret",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "directAccessGrantsEnabled": true
+    },
+    {
+      "clientId": "test-consumer",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "consumer-secret",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "directAccessGrantsEnabled": true
+    },
+    {
+      "clientId": "admin",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "admin-secret",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "authorizationServicesEnabled": true
+    }
+  ],
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin"
+        }
+      ],
+      "realmRoles": ["admin"],
+      "clientRoles": {
+        "realm-management": ["realm-admin"]
       }
     }
   ]

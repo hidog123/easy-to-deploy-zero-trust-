@@ -1,0 +1,50 @@
+{
+  "id": "master",
+  "realm": "master",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "kafka_broker",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "broker-secret",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": true,
+      "attributes": {
+        "access.token.lifespan": "3600"
+      }
+    },
+    {
+      "clientId": "test_consumer",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "consumer-secret",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "attributes": {
+        "access.token.lifespan": "3600"
+      }
+    },
+    {
+      "clientId": "kafka_ui",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "ui-secret",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "attributes": {
+        "access.token.lifespan": "3600"
+      }
+    }
+  ]
+}
